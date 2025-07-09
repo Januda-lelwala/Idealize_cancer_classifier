@@ -1,0 +1,7 @@
+Idealize 2025 Datathon Competition/*.csv
+__pycache__/
+*.py[cod]
+*.class
+.env
+venv/
+.ipynb_checkpoints
