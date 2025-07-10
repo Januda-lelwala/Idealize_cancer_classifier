@@ -10,6 +10,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import classification_report, accuracy_score, roc_auc_score
 import matplotlib.pyplot as plt
+from imblearn.over_sampling import SMOTE
 
 # Configure TensorFlow for optimal performance
 def configure_hardware():
@@ -65,7 +66,7 @@ np.random.seed(42)
 tf.random.set_seed(42)
 
 # Load the dataset
-train_df = pd.read_csv('Idealize 2025 Datathon Competition/train.csv')
+train_df = pd.read_csv('train.csv')
 
 # Display basic information about the dataset
 print("Dataset shape:", train_df.shape)
@@ -115,6 +116,16 @@ X_train, X_val, y_train, y_val = train_test_split(
 # Preprocess the data
 X_train_processed = preprocessor.fit_transform(X_train)
 X_val_processed = preprocessor.transform(X_val)
+
+# Print class distribution before SMOTE
+print("Class distribution before SMOTE:", np.bincount(y_train))
+
+# Apply SMOTE to training data only
+smote = SMOTE(random_state=42)
+X_train_processed, y_train = smote.fit_resample(X_train_processed, y_train)
+
+# Print class distribution after SMOTE
+print("Class distribution after SMOTE:", np.bincount(y_train))
 
 # Get the number of features after one-hot encoding
 num_features = X_train_processed.shape[1]
@@ -176,12 +187,10 @@ print("\nTraining the model...")
 history = model.fit(
     X_train_processed, y_train,
     validation_data=(X_val_processed, y_val),
-    epochs=200,  # Increased max epochs since we have early stopping
+    epochs=100,
     batch_size=256,  # Increased batch size for better GPU utilization
     callbacks=[early_stopping, reduce_lr, checkpoint],
-    verbose=1,
-    workers=4,
-    use_multiprocessing=True
+    verbose=1
 )
 
 # Evaluate the model
