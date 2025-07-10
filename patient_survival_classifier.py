@@ -1,3 +1,5 @@
+import os
+import platform
 import pandas as pd
 import numpy as np
 import tensorflow as tf
@@ -8,6 +10,55 @@ from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import classification_report, accuracy_score, roc_auc_score
 import matplotlib.pyplot as plt
+
+# Configure TensorFlow for optimal performance
+def configure_hardware():
+    # Disable oneDNN custom operations for better compatibility
+    os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+    
+    # Check for Apple Silicon (MPS)
+    if platform.system() == 'Darwin' and platform.processor() == 'arm':
+        print("Apple Silicon (M1/M2) detected. Configuring for MPS...")
+        # Enable memory growth for MPS if needed
+        try:
+            physical_devices = tf.config.list_physical_devices('MPS')
+            if physical_devices:
+                tf.config.experimental.set_memory_growth(physical_devices[0], True)
+                print(f"Using Apple Silicon GPU (MPS): {physical_devices[0]}")
+                return '/device:MPS:0'
+        except (ImportError, RuntimeError) as e:
+            print(f"Could not configure MPS: {e}")
+    
+    # Check for CUDA (NVIDIA GPU)
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        try:
+            # Enable memory growth to prevent TensorFlow from allocating all GPU memory at once
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            logical_gpus = tf.config.list_logical_devices('GPU')
+            print(f"{len(gpus)} Physical GPUs, {len(logical_gpus)} Logical GPUs")
+            print(f"Using GPU: {gpus[0]}")
+            return '/device:GPU:0'
+        except RuntimeError as e:
+            print(f"Could not configure GPU: {e}")
+    
+    # Fall back to CPU
+    print("No GPU/TPU found. Using CPU.")
+    return '/device:CPU:0'
+
+# Set device strategy
+strategy = tf.distribute.get_strategy()
+print(f"Using device: {strategy}")
+
+# Set random seeds for reproducibility
+def set_seeds(seed=42):
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    os.environ['TF_DETERMINISTIC_OPS'] = '1'
+
+set_seeds(42)
 
 # Set random seeds for reproducibility
 np.random.seed(42)
@@ -71,30 +122,53 @@ print(f"\nNumber of features after preprocessing: {num_features}")
 
 # Build the model
 def create_model(input_dim):
-    model = tf.keras.Sequential([
-        tf.keras.layers.Dense(128, activation='relu', input_shape=(input_dim,)),
-        tf.keras.layers.Dropout(0.3),
-        tf.keras.layers.Dense(64, activation='relu'),
-        tf.keras.layers.Dropout(0.2),
-        tf.keras.layers.Dense(1, activation='sigmoid')
-    ])
-    
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-        loss='binary_crossentropy',
-        metrics=['accuracy', tf.keras.metrics.AUC()]
-    )
-    
+    with strategy.scope():
+        model = tf.keras.Sequential([
+            tf.keras.layers.Dense(128, activation='relu', input_shape=(input_dim,)),
+            tf.keras.layers.BatchNormalization(),
+            tf.keras.layers.Dropout(0.3),
+            tf.keras.layers.Dense(64, activation='relu'),
+            tf.keras.layers.BatchNormalization(),
+            tf.keras.layers.Dropout(0.2),
+            tf.keras.layers.Dense(1, activation='sigmoid')
+        ])
+        
+        model.compile(
+            optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+            loss='binary_crossentropy',
+            metrics=['accuracy', tf.keras.metrics.AUC(name='auc')]
+        )
     return model
 
 # Create and train the model
+print("\nCreating model...")
 model = create_model(num_features)
+model.summary()
 
 # Define callbacks
 early_stopping = tf.keras.callbacks.EarlyStopping(
     monitor='val_loss',
-    patience=10,
-    restore_best_weights=True
+    patience=15,
+    restore_best_weights=True,
+    verbose=1
+)
+
+# Learning rate reduction on plateau
+reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(
+    monitor='val_loss',
+    factor=0.2,
+    patience=5,
+    min_lr=1e-6,
+    verbose=1
+)
+
+# Model checkpoint
+checkpoint = tf.keras.callbacks.ModelCheckpoint(
+    'best_model.keras',
+    monitor='val_accuracy',
+    save_best_only=True,
+    mode='max',
+    verbose=1
 )
 
 # Train the model
@@ -102,10 +176,12 @@ print("\nTraining the model...")
 history = model.fit(
     X_train_processed, y_train,
     validation_data=(X_val_processed, y_val),
-    epochs=100,
-    batch_size=32,
-    callbacks=[early_stopping],
-    verbose=1
+    epochs=200,  # Increased max epochs since we have early stopping
+    batch_size=256,  # Increased batch size for better GPU utilization
+    callbacks=[early_stopping, reduce_lr, checkpoint],
+    verbose=1,
+    workers=4,
+    use_multiprocessing=True
 )
 
 # Evaluate the model
