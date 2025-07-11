@@ -10,7 +10,6 @@ from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import classification_report, accuracy_score, roc_auc_score
 import matplotlib.pyplot as plt
-from imblearn.over_sampling import SMOTE
 
 # Configure TensorFlow for optimal performance
 def configure_hardware():
@@ -117,15 +116,71 @@ X_train, X_val, y_train, y_val = train_test_split(
 X_train_processed = preprocessor.fit_transform(X_train)
 X_val_processed = preprocessor.transform(X_val)
 
-# Print class distribution before SMOTE
-print("Class distribution before SMOTE:", np.bincount(y_train))
+# Print class distribution before oversampling
+print("Class distribution before oversampling:", np.bincount(y_train))
 
-# Apply SMOTE to training data only
-smote = SMOTE(random_state=42)
-X_train_processed, y_train = smote.fit_resample(X_train_processed, y_train)
+# Improved oversampling of the minority class by duplication
+def oversample_minority_class(X_processed, y, oversample_ratio=1.0):
+    """
+    Oversample minority class by duplication
+    
+    Args:
+        X_processed: Preprocessed features
+        y: Target labels
+        oversample_ratio: Ratio to oversample (1.0 = balance classes, 0.5 = half balance, etc.)
+    
+    Returns:
+        X_oversampled, y_oversampled: Oversampled data
+    """
+    unique, counts = np.unique(y, return_counts=True)
+    
+    if len(unique) != 2:
+        raise ValueError(f"Expected binary classification, got {len(unique)} classes")
+    
+    majority_class = unique[np.argmax(counts)]
+    minority_class = unique[np.argmin(counts)]
+    majority_count = counts.max()
+    minority_count = counts.min()
+    
+    print(f"Majority class {majority_class}: {majority_count} samples")
+    print(f"Minority class {minority_class}: {minority_count} samples")
+    
+    # Calculate number of samples to add
+    target_minority_count = int(minority_count + (majority_count - minority_count) * oversample_ratio)
+    num_to_add = target_minority_count - minority_count
+    
+    if num_to_add <= 0:
+        print("No oversampling needed or oversample_ratio too low")
+        return X_processed, y
+    
+    print(f"Adding {num_to_add} samples to minority class")
+    
+    # Get indices of minority class samples
+    minority_indices = np.where(y == minority_class)[0]
+    
+    # Randomly duplicate minority class samples
+    np.random.seed(42)  # For reproducibility
+    duplicated_indices = np.random.choice(minority_indices, size=num_to_add, replace=True)
+    
+    # Add duplicated samples
+    X_duplicated = X_processed[duplicated_indices]
+    y_duplicated = y[duplicated_indices]
+    
+    X_oversampled = np.vstack([X_processed, X_duplicated])
+    y_oversampled = np.concatenate([y, y_duplicated])
+    
+    return X_oversampled, y_oversampled
 
-# Print class distribution after SMOTE
-print("Class distribution after SMOTE:", np.bincount(y_train))
+# Apply oversampling
+X_train_processed, y_train = oversample_minority_class(X_train_processed, y_train, oversample_ratio=1.0)
+
+# Print class distribution after oversampling
+print("Class distribution after oversampling:", np.bincount(y_train))
+
+# Verify the oversampling worked correctly
+unique_after, counts_after = np.unique(y_train, return_counts=True)
+imbalance_ratio = counts_after.min() / counts_after.max()
+print(f"Class imbalance ratio after oversampling: {imbalance_ratio:.3f} (1.0 = perfectly balanced)")
 
 # Get the number of features after one-hot encoding
 num_features = X_train_processed.shape[1]
